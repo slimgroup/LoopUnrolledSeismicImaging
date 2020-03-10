@@ -8,11 +8,11 @@ using PyPlot, Random, JLD, Flux
 import Flux.Optimise.update!
 
 # Training data
-D = load("/data/pwitte3/models/overthrust_images_train.jld")
-ntrain = length(D["m"])
+D = load("/data/pwitte3/models/overthrust_images_test.jld")
+ntest = length(D["m"])
 
 # Crop images and models to 400 x 120 (must be evenly dividable by 4)
-for j=1:ntrain
+for j=1:ntest
     D["m"][j] = D["m"][j][1:400, 1:120]
     D["m0"][j] = D["m0"][j][1:400, 1:120]
     D["dm"][j] = D["dm"][j][1:400, 1:120]
@@ -83,27 +83,6 @@ J = judiJacobian(F0, q)
 
 ####################################################################################################
 
-# Objective function 
-function loss(L, J, d, η)
-    
-    # Initiliaze w/ zeros
-    nx, ny = J.model.n
-    η0 = zeros(Float32, nx, ny, 1, 1)
-    s0 = zeros(Float32, nx, ny, L.L[1].C.k - 1, 1)
-
-    # Forward pass
-    η_, s_ = L.forward(η0, s0, J, d)
-
-    # Residual and function value
-    Δη = η_ - η
-    f = .5f0*norm(Δη)^2
-
-    # Backward pass (set gradients)
-    L.backward(Δη, 0f0, η_, s_, J, d)
-
-    return f
-end
-
 # Dimensions
 n_in = 32
 n_hidden = 64
@@ -115,54 +94,13 @@ maxiter = 8
 L = NetworkLoop(n[1], n[2], n_in, n_hidden, batchsize, maxiter, Ψ)
 
 # Get network parameters and overwrite w/ saved values
-iter_start = 800
+iter = 800
 P_curr = get_params(L)
-P_save = load(join(["network_params_iteration_", string(iter_start), ".jld"]))["P"]
+P_save = load(join(["network_params_iteration_", string(iter), ".jld"]))["P"]
 for j=1:length(P_curr)
     P_curr[j].data = P_save[j].data
 end
 
-# Optimization parameters
-opt = load(join(["network_params_iteration_", string(iter_start), ".jld"]))["opt"]    #Flux.ADAM(1f-3)
-train_iter = 1000
-indices = randperm(train_iter)
-
-# Training loop
-for j=iter_start+1:train_iter
-
-    # Draw image + velocity from training data
-    i = indices[j]
-    print("Source no: ", i, "\n")
-    η = D["dm"][i]
-    m0 = D["m0"][i]
-
-    # Draw random source
-    for k=1:num_simsource
-        q_sim[:,k] = ricker_wavelet(time, dt, f0) * randn(Float32, 1)[1]/sqrt(1f0*num_simsource)
-    end
-
-    # Generate observed data on the fly
-    J.model.m = m0
-    J.source[1] = q_sim
-    d = J*vec(η)
-
-    # Evaluate objective and gradients
-    @time f = loss(L, J, d, η)
-    print("Iteration: ", j, "; f(x) = ", f, "\n")
-
-    # Update weights
-    P = get_params(L)
-    for p in P
-        update!(opt, p.data, p.grad)
-    end
-    clear_grad!(L)
-
-    # Save intermediate results
-    if mod(j, 100) == 0
-        P = get_params(L)
-        save(join(["network_params_iteration_", string(j), ".jld"]), "P", P, "opt", opt)
-    end
-end
 
 ####################################################################################################
 # Evaluate trained network for new data
@@ -193,7 +131,7 @@ rtm = J'*d
 η = η / norm(η, 2)
 rtm = rtm / norm(rtm, 2)
 
-figure(figsize=(6, 7))
+figure(figsize=(5, 7))
 subplot(3,1,1); imshow(reshape(η, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("True image")
 subplot(3,1,2); imshow(reshape(rtm, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("RTM")
 subplot(3,1,3); imshow(reshape(η_, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("i-RIM")
