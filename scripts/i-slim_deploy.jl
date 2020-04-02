@@ -3,9 +3,8 @@
 # Author: Philipp Witte, pwitte3@gatech.edu
 # Date: January 2020
 
-using JUDI.TimeModeling, JUDI4Flux, LinearAlgebra, InvertibleNetworks
+using JUDI.TimeModeling, LinearAlgebra, InvertibleNetworks
 using PyPlot, Random, JLD, Flux
-import Flux.Optimise.update!
 
 Random.seed!(11)
 
@@ -85,22 +84,45 @@ J = judiJacobian(F0, q)
 
 ####################################################################################################
 
+
 # Dimensions
-n_in = 32
-n_hidden = 64
+nx1 = n[1]
+nx2 = n[2]
+nx_in = 32
+nx_hidden = 64
 batchsize = 1
+
+#ny1 = recGeometry.nt[1]
+#ny2 = nxrec
+#ny_in = 1
+#ny_hidden = 64
+
 maxiter = 4
 Ψ(η) = identity(η)
 
-# Unrolled loop
-L = NetworkLoop(n[1], n[2], n_in, n_hidden, batchsize, maxiter, Ψ)
+SLIM = Array{AffineCouplingLayerSLIM}(undef, maxiter)
+Params = Array{Parameter}(undef, 0)
 
-# Get network parameters and overwrite w/ saved values
-iter = 200
-P_curr = get_params(L)
-P_save = load(join(["../data/network_params_iteration_", string(iter), ".jld"]))["P"]
-for j=1:length(P_curr)
-    P_curr[j].data = P_save[j].data
+# i-SLIM coupling layer
+for j=1:maxiter
+    SLIM[j] = AffineCouplingLayerSLIM(nx1, nx2, nx_in, nx_hidden, batchsize, Ψ; logdet=false, permute=true)
+    #SLIM[j] = ConditionalLayerSLIM(nx1, nx2, nx_in, nx_hidden, ny1, ny2, ny_channel, ny_hidden, batchsize; type="affine")
+    global Params = cat(Params, get_params(SLIM[j]); dims=1)
+end
+
+
+function forward(X, Y, J)
+    for j=1:maxiter
+        X = SLIM[j].forward(X, Y, J)
+    end
+    return X
+end
+
+# Load params
+iter = 600
+P_save = load(join(["../data/network_islim_params_iteration_", string(iter), ".jld"]))["P"]
+for j=1:length(Params)
+    Params[j].data = P_save[j].data
 end
 
 
@@ -109,7 +131,7 @@ end
 
 # Step 1: Draw new m0, q_sim and d
 i = 99 #randperm(ntest)[1]
-η = D["dm"][i]
+x = D["dm"][i]
 m0 = D["m0"][i]
 for k=1:num_simsource
     q_sim[:,k] = ricker_wavelet(time, dt, f0) * randn(Float32, 1)[1]/sqrt(1f0*num_simsource)
@@ -118,23 +140,22 @@ end
 # Set up Jacobian
 J.model.m = m0
 J.source[1] = q_sim
-d = J*vec(η)    # Observed data
-d = reshape(d, recGeometry.nt[1], nxrec, 1, batchsize)
+Y = J*vec(x)    # Observed data
 
 # Step 2: Compute predicted image
-η0 = zeros(Float32, n[1], n[2], 1, 1)   # zero initial guess
-s0 = zeros(Float32, n[1], n[2], n_in-1, 1)
-η_ = L.forward(η0, s0, d, J)[1]
+X0 = zeros(Float32, nx1, nx2, nx_in, batchsize)
+X = forward(X0, Y, J)
+x_ = X[:,:,1,1]
 
 # Comparison to RTM
-rtm = J'*vec(d)
+rtm = J'*vec(Y)
 
 # Plot
-η_ = η_ / norm(η_, 2)
-η = η / norm(η, 2)
+x_ = x_ / norm(x_, 2)
+x = x / norm(x, 2)
 rtm = rtm / norm(rtm, 2)
 
 figure(figsize=(5, 7))
-subplot(3,1,1); imshow(reshape(η, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("True image")
+subplot(3,1,1); imshow(reshape(x, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("True image")
 subplot(3,1,2); imshow(reshape(rtm, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("RTM")
-subplot(3,1,3); imshow(reshape(η_, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("i-RIM")
+subplot(3,1,3); imshow(reshape(x_, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("i-SLIM (affine)")

@@ -83,47 +83,84 @@ J = judiJacobian(F0, q)
 
 ####################################################################################################
 
+# Dimensions
+nx1 = n[1]
+nx2 = n[2]
+nx_in = 32
+nx_hidden = 64
+batchsize = 1
+
+#ny1 = recGeometry.nt[1]
+#ny2 = nxrec
+#ny_in = 1
+#ny_hidden = 64
+
+maxiter = 8
+Ψ(η) = identity(η)
+
+SLIM = Array{AffineCouplingLayerSLIM}(undef, maxiter)
+Params = Array{Parameter}(undef, 0)
+
+# i-SLIM coupling layer
+for j=1:maxiter
+    SLIM[j] = AffineCouplingLayerSLIM(nx1, nx2, nx_in, nx_hidden, batchsize, Ψ; logdet=false, permute=true)
+    #SLIM[j] = ConditionalLayerSLIM(nx1, nx2, nx_in, nx_hidden, ny1, ny2, ny_channel, ny_hidden, batchsize; type="affine")
+    global Params = cat(Params, get_params(SLIM[j]); dims=1)
+end
+
+
+function forward(X, Y, J)
+    for j=1:maxiter
+        X = SLIM[j].forward(X, Y, J)
+    end
+    return X
+end
+
+function backward(dX, X, Y, J)
+    for j=maxiter:-1:1
+        dX, X = SLIM[j].backward(dX, X, Y, J)[[1,3]]
+    end
+    return dX
+end
+
 # Objective function 
-function loss(L, J, d, η)
+function loss(Y, J, x_true)
     
     # Initiliaze w/ zeros
-    nx, ny = J.model.n
-    η0 = zeros(Float32, nx, ny, 1, 1)
-    s0 = zeros(Float32, nx, ny, L.L[1].C.k - 1, 1)
+    X0 = zeros(Float32, nx1, nx2, nx_in, batchsize)
 
     # Forward pass
-    η_, s_ = L.forward(η0, s0, J, d)
+    X_ = forward(X0, Y, J)
 
     # Residual and function value
-    Δη = η_ - η
-    f = .5f0*norm(Δη)^2
+    dX = zeros(Float32, nx1, nx2, nx_in, batchsize)
+    dX[:,:,1:1,:] = X_[:,:,1:1,:] - reshape(x_true, nx1, nx2, 1, batchsize)
+    f = .5f0*norm(dX)^2
 
     # Backward pass (set gradients)
-    L.backward(Δη, 0f0, η_, s_, J, d)
+    backward(dX, X_, Y, J)
 
     return f
 end
 
-# Dimensions
-n_in = 32
-n_hidden = 64
-batchsize = 1
-maxiter = 8
-Ψ(η) = identity(η)
-
-# Unrolled loop
-L = NetworkLoop(n[1], n[2], n_in, n_hidden, batchsize, maxiter, Ψ)
+####################################################################################################
 
 # Get network parameters and overwrite w/ saved values
-iter_start = 800
-P_curr = get_params(L)
-P_save = load(join(["network_params_iteration_", string(iter_start), ".jld"]))["P"]
-for j=1:length(P_curr)
-    P_curr[j].data = P_save[j].data
+iter_start = 1
+if iter_start > 1
+    P_save = load(join(["../data/network_islim_iter_8_params_iteration_", string(iter_start), ".jld"]))["P"]
+    for j=1:length(Params)
+        Params[j].data = P_save[j].data
+    end
+end
+
+if iter_start > 1
+    opt = load(join(["../data/network_islim_iter_8_params_iteration_", string(iter_start), ".jld"]))["opt"]
+else
+    opt = Flux.ADAM(1f-3)
 end
 
 # Optimization parameters
-opt = load(join(["network_params_iteration_", string(iter_start), ".jld"]))["opt"]    #Flux.ADAM(1f-3)
 train_iter = 1000
 indices = randperm(ntrain)
 
@@ -133,7 +170,7 @@ for j=iter_start+1:train_iter
     # Draw image + velocity from training data
     i = indices[j]
     print("Source no: ", i, "\n")
-    η = D["dm"][i]
+    x_true = D["dm"][i]
     m0 = D["m0"][i]
 
     # Draw random source
@@ -144,56 +181,24 @@ for j=iter_start+1:train_iter
     # Generate observed data on the fly
     J.model.m = m0
     J.source[1] = q_sim
-    d = J*vec(η)
+    Y = J*vec(x_true)
 
     # Evaluate objective and gradients
-    @time f = loss(L, J, d, η)
+    @time f = loss(Y, J, x_true)
     print("Iteration: ", j, "; f(x) = ", f, "\n")
 
     # Update weights
-    P = get_params(L)
-    for p in P
+    for p in Params
         update!(opt, p.data, p.grad)
     end
-    clear_grad!(L)
+    for j=1:length(SLIM)
+        clear_grad!(SLIM[j])
+    end
 
     # Save intermediate results
     if mod(j, 100) == 0
-        P = get_params(L)
-        save(join(["network_params_iteration_", string(j), ".jld"]), "P", P, "opt", opt)
+        save(join(["../data/network_islim_iter_8_params_iteration_", string(j), ".jld"]), "P", Params, "opt", opt)
     end
 end
 
-####################################################################################################
-# Evaluate trained network for new data
 
-# Step 1: Draw new m0, q_sim and d
-i = randperm(ntrain)[1]
-η = D["dm"][i]
-m0 = D["m0"][i]
-for k=1:num_simsource
-    q_sim[:,k] = ricker_wavelet(time, dt, f0) * randn(Float32, 1)[1]/sqrt(1f0*num_simsource)
-end
-
-# Set up Jacobian
-J.model.m = m0
-J.source[1] = q_sim
-d = J*vec(η)    # Observed data
-
-# Step 2: Compute predicted image
-η0 = zeros(Float32, n[1], n[2], 1, 1)   # zero initial guess
-s0 = zeros(Float32, n[1], n[2], n_in-1, 1)
-η_ = L.forward(η0, s0, J, d)[1]
-
-# Comparison to RTM
-rtm = J'*d
-
-# Plot
-η_ = η_ / norm(η_, 2)
-η = η / norm(η, 2)
-rtm = rtm / norm(rtm, 2)
-
-figure(figsize=(6, 7))
-subplot(3,1,1); imshow(reshape(η, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("True image")
-subplot(3,1,2); imshow(reshape(rtm, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("RTM")
-subplot(3,1,3); imshow(reshape(η_, model0.n)', cmap="gray", vmin=-2e-2, vmax=2e-2); title("i-RIM")
