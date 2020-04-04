@@ -1,7 +1,7 @@
 # Recurrent inference machines for seismic imaging
 # Same notation as Putzky and Welling paper (2017)
 # Author: Philipp Witte, pwitte3@gatech.edu
-# Date: January 2020
+# Date: April 2020
 
 using JUDI.TimeModeling, JUDI4Flux, LinearAlgebra, InvertibleNetworks
 using PyPlot, Random, JLD, Flux
