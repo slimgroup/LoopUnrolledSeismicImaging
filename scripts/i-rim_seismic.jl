@@ -8,7 +8,7 @@ using PyPlot, Random, JLD, Flux
 import Flux.Optimise.update!
 
 # Training data
-D = load("/data/pwitte3/models/overthrust_images_train.jld")
+D = load("../data/overthrust_images_train.jld")
 ntrain = length(D["m"])
 
 # Crop images and models to 400 x 120 (must be evenly dividable by 4)
@@ -40,7 +40,7 @@ zrec = range(250f0, stop=250f0, length=nxrec)
 
 # receiver sampling and recording time
 time = 2000f0   # receiver recording time [ms]
-dt = 4f0    # receiver sampling interval [ms]
+dt = 1f0    # receiver sampling interval [ms]
 
 # Set up receiver structure
 recGeometry = Geometry(xrec, yrec, zrec; dt=dt, t=time, nsrc=nsrc)
@@ -70,7 +70,7 @@ info = Info(prod(n), nsrc, ntComp)
 ####################################################################################################
 
 # Return data as julia array
-opt = Options(return_array=true)
+opt = Options(return_array=true, dt_comp=1f0)
 
 # Setup operators
 F0 = judiModeling(info, model0; options=opt)
@@ -92,14 +92,14 @@ function loss(L, J, d, η)
     s0 = zeros(Float32, nx, ny, L.L[1].C.k - 1, 1)
 
     # Forward pass
-    η_, s_ = L.forward(η0, s0, J, d)
+    η_, s_ = L.forward(η0, s0, d, J)
 
     # Residual and function value
     Δη = η_ - η
     f = .5f0*norm(Δη)^2
 
     # Backward pass (set gradients)
-    L.backward(Δη, 0f0, η_, s_, J, d)
+    L.backward(Δη, 0f0.*s0, η_, s_, d, J)
 
     return f
 end
@@ -108,28 +108,27 @@ end
 n_in = 32
 n_hidden = 64
 batchsize = 1
-maxiter = 8
+maxiter = 2
 Ψ(η) = identity(η)
 
 # Unrolled loop
-L = NetworkLoop(n[1], n[2], n_in, n_hidden, batchsize, maxiter, Ψ)
+L = NetworkLoop(n[1], n[2], n_in, n_hidden, batchsize, maxiter, Ψ; type="HINT")
 
 # Get network parameters and overwrite w/ saved values
-iter_start = 800
+iter_start = 1
 P_curr = get_params(L)
-P_save = load(join(["network_params_iteration_", string(iter_start), ".jld"]))["P"]
-for j=1:length(P_curr)
-    P_curr[j].data = P_save[j].data
-end
+# P_save = load(join(["network_params_iteration_", string(iter_start), ".jld"]))["P"]
+# for j=1:length(P_curr)
+#     P_curr[j].data = P_save[j].data
+# end
 
 # Optimization parameters
-opt = load(join(["network_params_iteration_", string(iter_start), ".jld"]))["opt"]    #Flux.ADAM(1f-3)
+opt = Flux.ADAM(1f-3)
 train_iter = 1000
 indices = randperm(ntrain)
 
 # Training loop
 for j=iter_start+1:train_iter
-
     # Draw image + velocity from training data
     i = indices[j]
     print("Source no: ", i, "\n")
@@ -183,7 +182,7 @@ d = J*vec(η)    # Observed data
 # Step 2: Compute predicted image
 η0 = zeros(Float32, n[1], n[2], 1, 1)   # zero initial guess
 s0 = zeros(Float32, n[1], n[2], n_in-1, 1)
-η_ = L.forward(η0, s0, J, d)[1]
+η_ = L.forward(η0, s0, d, J)[1]
 
 # Comparison to RTM
 rtm = J'*d
