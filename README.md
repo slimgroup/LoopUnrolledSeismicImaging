@@ -1,4 +1,4 @@
-[![DOI](https://zenodo.org/badge/271857704.svg)](https://zenodo.org/badge/latestdoi/271857704)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.3891801.svg)](https://doi.org/10.5281/zenodo.3891801)
 
 ## Loop Unrolled Seismic Imaging
 
